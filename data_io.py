@@ -1,10 +1,7 @@
 import numpy as np
 from pathlib import Path
-import signal_processing  # 统一在顶部导入，避免循环内部重复导入
+import signal_processing
 
-# =====================================================================
-# 1. 定义二进制结构字典 (AGE 仪器格式标准)
-# =====================================================================
 file_header_dtype = np.dtype([
     ('day', 'i2'), ('month', 'i2'), ('year', 'i2'), ('hour', 'i2'), ('minute', 'i2'),
     ('geo', 'S20'), ('backup0', 'i1'), ('met', 'i1'), ('backup1', '20i1'),
@@ -32,11 +29,8 @@ chan_header_dtype = np.dtype([
 ])
 
 
-# =====================================================================
-# 2. 核心读取函数
-# =====================================================================
 def read_age_binary(filepath):
-    """读取 AGE 二进制文件，直接提取原始数据机器码"""
+    """读取 AGE 二进制文件，直接提取原始数据机器码（不进行物理转换）"""
     with open(filepath, 'rb') as f:
         file_header = np.frombuffer(f.read(512), dtype=file_header_dtype)[0]
         n_chan = int(file_header['kan'])
@@ -59,11 +53,7 @@ def read_age_binary(filepath):
     return file_header, chan_headers, timeseries, sample_rate, n_max_period
 
 
-# =====================================================================
-# 3. 辅助文件导出函数
-# =====================================================================
 def export_info_file(filepath, out_dir, header, chans, sr, periods):
-    """导出 .info 硬件描述文件"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(filepath).stem
@@ -86,7 +76,6 @@ def export_info_file(filepath, out_dir, header, chans, sr, periods):
 
 
 def export_timeseries(filepath, out_dir, period_idx, cyc_len, cyc_num, n_chan, ts_data):
-    """导出单周期时域波形文件"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(filepath).stem
@@ -98,7 +87,6 @@ def export_timeseries(filepath, out_dir, period_idx, cyc_len, cyc_num, n_chan, t
 
 
 def process_and_export_all_data(tx_filepath, rx_filepath):
-    """一键执行数据导出流程"""
     print(">>> [1/3] 正在加载并处理数据...")
     tx_header, tx_chans, tx_ts, tx_sr, tx_periods = read_age_binary(tx_filepath)
     rx_header, rx_chans, rx_ts, rx_sr, rx_periods = read_age_binary(rx_filepath)
@@ -134,10 +122,20 @@ def process_and_export_all_data(tx_filepath, rx_filepath):
         def _export_spectrum(seg_all, n_chan, sr, out_dir, path_stem):
             export_data = []
             for c in range(n_chan):
-                xf, yf = signal_processing.fft_no_stack(seg_all[c, :], sr)
+                # 核心修复点：使用纯粹的 FFT 提取复数，不再除以 n_sam
+                xf, yf = signal_processing.fft_no_stack(seg_all[c, :], sr, window_type='hann')
                 if c == 0: export_data.append(xf)
-                yf_scaled = yf / n_sam * 2.0
-                export_data.extend([np.real(yf_scaled), np.imag(yf_scaled)])
+                export_data.extend([np.real(yf), np.imag(yf)])
 
             header_str = "Freq(Hz)" + "".join([f"\tCh{c + 1}_Re\tCh{c + 1}_Im" for c in range(n_chan)])
-            out_file = out
+            out_file = out_dir / f"{path_stem}_#Period={i + 1:02d}_Spectrum.txt"
+            np.savetxt(out_file, np.column_stack(export_data), fmt="%.6e", delimiter="\t", header=header_str,
+                       comments="")
+
+        _export_spectrum(tx_seg_all, n_chan_tx, tx_sr, tx_fs_dir, tx_path.stem)
+        _export_spectrum(rx_seg_all, n_chan_rx, rx_sr, rx_fs_dir, rx_path.stem)
+
+        curr_tx_idx += n_sam
+        curr_rx_idx += n_sam
+
+    print("[√] 数据解析并导出完毕！")
